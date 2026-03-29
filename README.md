@@ -10,7 +10,7 @@ BlindBond fixes this with Fully Homomorphic Encryption. Lenders submit FHE-encry
 
 **17 passing tests. Deployed on Arbitrum Sepolia with live FHE encryption. Full lifecycle verified on-chain.**
 
-**[Live App](https://frontend-two-phi-72.vercel.app)** | Built on [Fhenix CoFHE](https://docs.fhenix.io)
+**[Live App](https://blindbond.vercel.app)** | Built on [Fhenix CoFHE](https://docs.fhenix.io)
 
 > **Judges:** Run `npx hardhat run scripts/full-demo.ts --network arb-sepolia` to see the complete lifecycle in one command — creates a bond, funds 3 lender wallets, encrypts and submits 3 rate bids, waits for deadline, resolves 2 tournament passes on encrypted data, settles at the clearing rate, borrower repays, lenders claim. No MetaMask required.
 
