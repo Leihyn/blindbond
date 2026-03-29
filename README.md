@@ -10,7 +10,9 @@ BlindBond fixes this with Fully Homomorphic Encryption. Lenders submit FHE-encry
 
 **17 passing tests. Deployed on Arbitrum Sepolia with live FHE encryption. Full lifecycle verified on-chain.**
 
-Built on [Fhenix CoFHE](https://docs.fhenix.io).
+**[Live App](https://frontend-two-phi-72.vercel.app)** | Built on [Fhenix CoFHE](https://docs.fhenix.io)
+
+> **Judges:** Run `npx hardhat run scripts/full-demo.ts --network arb-sepolia` to see the complete lifecycle in one command — creates a bond, funds 3 lender wallets, encrypts and submits 3 rate bids, waits for deadline, resolves 2 tournament passes on encrypted data, settles at the clearing rate, borrower repays, lenders claim. No MetaMask required.
 
 ## How It Works
 
@@ -31,11 +33,20 @@ Define loan terms       rates (FHE)          on ciphertext            = K-th low
 
 **4. Uniform Price Settlement**: All K winners earn the clearing rate (the marginal winner's own rate). This is not Vickrey (second-price) — the clearing rate is the marginal winner's actual bid. Losers get full deposits back immediately.
 
-## Why Not Vickrey?
+## From VeilBid to BlindBond
 
-We built [VeilBid](https://github.com/Leihyn/cipherpool) — a Vickrey (second-price sealed-bid) auction with Zama fhEVM. 27 tests, 14 FHE primitives, deployed on Ethereum Sepolia.
+BlindBond is the second FHE auction protocol we've built.
 
-Vickrey is a single-unit mechanism. Credit is inherently multi-unit — multiple lenders fill one bond. Stretching Vickrey to credit means either forcing single-lender-takes-all or abandoning Vickrey entirely. We chose uniform price because it's what real bond markets use, naturally supports multiple lenders, and doesn't require game-theoretic assumptions that break down in repeated auctions.
+**[VeilBid](https://github.com/Leihyn/cipherpool)** (Zama fhEVM) was a Vickrey (second-price sealed-bid) auction — 27 tests, 14 FHE primitives, deployed on Ethereum Sepolia. The highest bidder wins, pays the second-highest price. Truthful bidding is the dominant strategy. It works for single-unit auctions: one NFT, one block of tokens, one license.
+
+**The problem:** Credit markets aren't single-unit. A borrower needs $500K — they can't rely on one lender filling the whole thing. Real bond markets have multiple lenders filling one issuance. Vickrey doesn't scale to this. VCG (the multi-unit equivalent) has quadratic FHE cost.
+
+**BlindBond** solves this with a different mechanism:
+- **Uniform price** instead of second-price — the clearing rate is the marginal winner's own rate, not someone else's bid
+- **Iterated tournament** instead of single-pass — K passes find K winners, reusing VeilBid's tournament bracket and first-match exclusion pattern
+- **Multi-lender** by design — K slots, K winners, one clearing rate
+
+The FHE primitives are the same (`lt`, `eq`, `select`, `and`, `or`, `not`). The economic mechanism is fundamentally different. This is new work, not a port.
 
 ## Proven on Arbitrum Sepolia
 
@@ -149,17 +160,20 @@ The market sees the clearing rate (public by design). Individual losing bids are
 # Install and run tests (local Hardhat with FHE mock)
 npm install
 npx hardhat compile
-npx hardhat test
+npx hardhat test          # 17/17 passing
 
 # Deploy to Arbitrum Sepolia
 cp .env.example .env
-# Add your PRIVATE_KEY to .env
+# Add your PRIVATE_KEY to .env (needs Arb Sepolia ETH)
 npx hardhat run scripts/deploy-sequential.ts --network arb-sepolia
 
-# Run the full lifecycle demo on testnet
+# *** THE DEMO — run this to see everything work ***
 npx hardhat run scripts/full-demo.ts --network arb-sepolia
+# Creates bond, funds 3 lenders, encrypts 3 rate bids with FHE,
+# resolves tournament, settles at clearing rate, repays, claims.
+# ~5 minutes end-to-end. No MetaMask needed.
 
-# Run the frontend
+# Run the frontend (for individual wallet interaction)
 cd frontend && npm install && npm run dev
 ```
 
