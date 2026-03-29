@@ -1,0 +1,8 @@
+{
+  "network": "arb-sepolia",
+  "chainId": 421614,
+  "deployer": "0xD9a1048f900E57C0C320eF11eFfAF725d1a9353f",
+  "BondAuction": "0xD916970FE36541A0a71Db13415CfFBFF005e761e",
+  "USDC": "0xcC86944f5E7385cA6Df8EEC5d40957840cfdfbb2",
+  "WETH": "0x55Bd48C34441FEdA5c0D45a2400976fB933Abb7e"
+}
