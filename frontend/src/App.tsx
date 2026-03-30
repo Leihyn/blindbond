@@ -1,10 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import {
   useAccount,
   useConnect,
   useDisconnect,
   useReadContract,
-  useReadContracts,
   useWriteContract,
   useWaitForTransactionReceipt,
   usePublicClient,
@@ -393,7 +392,8 @@ function SubmitBid() {
 
     try {
       setEncrypting(true);
-      const { createCofheClient, createCofheConfig, Encryptable } = await import("@cofhe/sdk/web");
+      const { createCofheClient, createCofheConfig } = await import("@cofhe/sdk/web");
+      const { Encryptable } = await import("@cofhe/sdk");
       const { arbSepolia } = await import("@cofhe/sdk/chains");
 
       const config = createCofheConfig({ supportedChains: [arbSepolia] });
