@@ -54,41 +54,41 @@ Commits this wave: bfef53a (ConfidentialToken integration), 39ef564 (changelog +
 
 
 ==============================================================
-MILESTONE — 4TH WAVE (build goals)
+MILESTONE — 4TH WAVE (max 1,000 chars)
 ==============================================================
 
 Wave 4 build goals:
 
-a. Variable-size encrypted positions. Replace fixed slots with per-lender euint64 deposit amounts so position size is private end-to-end (today the slot count is plaintext; lenders leak the fact they took exactly one slot).
+a. Variable-size encrypted positions. Replace fixed slots with per-lender euint64 deposit amounts so position size is private end-to-end (today the slot count is plaintext).
 
-b. Selective-disclosure regulator flow in the UI. Borrower-initiated unseal of winning bids to a designated regulator address, with on-chain audit trail and a UI walkthrough on the live app.
+b. Selective-disclosure regulator flow in the UI. Borrower-initiated unseal of winning bids to a designated regulator address, with on-chain audit trail.
 
-c. On-chain test traces. Annotated Arbiscan tx links for the full lifecycle (create → bid × N → resolve → settle → repay → claim) with explanations of which fields are encrypted vs plaintext at each step.
+c. Annotated Arbiscan tx links for the full lifecycle (create → bid × N → resolve → settle → repay → claim).
 
-d. Borrower repayment via FHERC20 transferFrom path. Today the borrower must setOperator then repay; collapse into a single permit-style flow with deadline.
+d. Permit-style FHERC20 repayment — collapse setOperator + repay into a single deadline-bound flow.
 
-e. Multi-bond UI. Browse open auctions, filter by collateral type, sort by max-rate ceiling. Today the frontend handles one bond at a time.
+e. Multi-bond UI: browse open auctions, filter by collateral, sort by max-rate.
 
-f. Mainnet-readiness checklist. Slither, mythril, and CoFHE-specific ACL audit pass. Document every FHE.allow call site with intent.
+f. Mainnet-readiness checklist: Slither, mythril, custom CoFHE ACL audit; document every FHE.allow site.
 
 
 ==============================================================
-MILESTONE — 5TH WAVE (build goals)
+MILESTONE — 5TH WAVE (max 1,000 chars)
 ==============================================================
 
 Wave 5 build goals (final):
 
-a. Live institutional pilot. One live bond auction on Arbitrum Sepolia run with real lenders (target: 10+ bidders, 3+ slots) end-to-end, proving the iterated-tournament resolution at scale.
+a. Live institutional pilot — one live bond auction on Arbitrum Sepolia with 10+ real lenders end-to-end, proving iterated-tournament resolution at scale.
 
-b. Compliance disclosure case study. Document a full regulator unseal flow start-to-finish — the selective-disclosure story that distinguishes BlindBond from generic dark pools.
+b. Compliance disclosure case study. Full regulator unseal flow start-to-finish — the selective-disclosure story that distinguishes BlindBond from generic dark pools.
 
-c. Mainnet-readiness security review. Trail of Bits-style code-maturity assessment + slither + custom CoFHE ACL audit. Public report committed to the repo.
+c. Mainnet-readiness security review: Trail of Bits-style code-maturity assessment, Slither, custom CoFHE ACL audit. Public report in the repo.
 
-d. Spec document (SPEC.md). Formal description of the iterated-tournament uniform-price mechanism, ACL invariants, and FHERC20 integration so a third party could re-implement it.
+d. SPEC.md — formal description of the iterated-tournament uniform-price mechanism, ACL invariants, and FHERC20 integration so a third party could re-implement it.
 
-e. Pitch + investor deck. 10-slide deck framing BlindBond as the on-chain analog of Treasury sealed-bid auctions ($2T/year market), with the institutional-rails narrative the buildathon explicitly calls out.
+e. 10-slide investor deck framing BlindBond as the on-chain analog of Treasury sealed-bid auctions ($2T/year market).
 
-f. Wave-5 demo video. End-to-end recording showing real-time encryption, on-chain resolution, settlement, and regulator disclosure — the full thesis in 3 minutes.
+f. Wave-5 demo video: real-time encryption, on-chain resolution, settlement, regulator disclosure — full thesis in 3 minutes.
 
 
 ==============================================================
