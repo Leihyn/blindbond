@@ -8,11 +8,13 @@ In TradFi, the US Treasury issues $2 trillion in bonds every year through sealed
 
 BlindBond fixes this with Fully Homomorphic Encryption. Lenders submit FHE-encrypted interest rate bids. An iterated tournament bracket finds the clearing rate by computing directly on ciphertext — without decrypting any individual bid. All winning lenders earn the same uniform clearing rate. Individual bid rates stay encrypted forever.
 
+All lending flows use **ConfidentialToken (FHERC20)** — lender deposits, payouts, and refunds flow through encrypted balances. An on-chain observer sees ciphertext hashes, never dollar amounts. Rates AND positions are private.
+
 **17 passing tests. Deployed on Arbitrum Sepolia with live FHE encryption. Full lifecycle verified on-chain.**
 
 **[Live App](https://blindbond.vercel.app)** | Built on [Fhenix CoFHE](https://docs.fhenix.io)
 
-> **Judges:** Run `npx hardhat run scripts/full-demo.ts --network arb-sepolia` to see the complete lifecycle in one command — creates a bond, funds 3 lender wallets, encrypts and submits 3 rate bids, waits for deadline, resolves 2 tournament passes on encrypted data, settles at the clearing rate, borrower repays, lenders claim. No MetaMask required.
+> **Judges:** Run `npx hardhat run scripts/seed-bond.ts --network arb-sepolia` to seed a bond with 5 encrypted bids, then explore the resolution flow in the live app. Or run `npx hardhat run scripts/full-demo.ts --network arb-sepolia` for the complete lifecycle in one command.
 
 ## How It Works
 
@@ -76,11 +78,11 @@ Gas costs (Arbitrum Sepolia):
 
 ## Contract Addresses (Arbitrum Sepolia)
 
-| Contract | Address |
-|---|---|
-| BondAuction | [`0xD916970FE36541A0a71Db13415CfFBFF005e761e`](https://sepolia.arbiscan.io/address/0xD916970FE36541A0a71Db13415CfFBFF005e761e) |
-| USDC (Mock) | [`0xcC86944f5E7385cA6Df8EEC5d40957840cfdfbb2`](https://sepolia.arbiscan.io/address/0xcC86944f5E7385cA6Df8EEC5d40957840cfdfbb2) |
-| WETH (Mock) | [`0x55Bd48C34441FEdA5c0D45a2400976fB933Abb7e`](https://sepolia.arbiscan.io/address/0x55Bd48C34441FEdA5c0D45a2400976fB933Abb7e) |
+| Contract | Type | Address |
+|---|---|---|
+| BondAuction | Core | [`0x2f62CcF1C2589c9f785Ea861CF7E16FF1f61F90E`](https://sepolia.arbiscan.io/address/0x2f62CcF1C2589c9f785Ea861CF7E16FF1f61F90E) |
+| cUSDC | **ConfidentialToken (FHERC20)** | [`0x443Cf954feFd48ac73f1bC79C71978D427e93389`](https://sepolia.arbiscan.io/address/0x443Cf954feFd48ac73f1bC79C71978D427e93389) |
+| WETH | MockERC20 | [`0x39D746e76631E81F50E8a013b509eB716981f9C0`](https://sepolia.arbiscan.io/address/0x39D746e76631E81F50E8a013b509eB716981f9C0) |
 
 ## FHE Operations per Pass
 
@@ -97,17 +99,37 @@ Each tournament pass uses 7 FHE operations per bid:
 
 For K=5 slots, N=20 bidders: ~700 FHE operations across 5 transactions.
 
+### ConfidentialToken (FHERC20) FHE Operations
+
+Every deposit, refund, payout, and repayment uses additional FHE operations:
+
+| Operation | Purpose |
+|---|---|
+| `FHE.lte` | Check if sender has sufficient encrypted balance |
+| `FHE.select` | Transfer value if sufficient, 0 otherwise (no revert — preserves privacy) |
+| `FHE.sub` | Subtract from sender's encrypted balance |
+| `FHE.add` | Add to receiver's encrypted balance |
+| `FHE.allow` / `FHE.allowThis` | ACL: grant decrypt access to holders |
+
+Total FHE primitives used across the protocol: **14** (`lt`, `lte`, `eq`, `select`, `and`, `or`, `not`, `asEuint64`, `asEbool`, `add`, `sub`, `allow`, `allowThis`, `allowPublic`).
+
 ## Privacy Model
 
 | Data | Visibility |
 |---|---|
-| Bond parameters (collateral, borrow amount, max rate) | Public |
+| Bond parameters (collateral, max rate) | Public (collateral is ERC20) |
 | Bidder addresses and bid count | Public |
-| Deposit amount (fixed, same for all) | Public |
+| **Deposit amounts (cUSDC balances)** | **Encrypted. ConfidentialToken (FHERC20).** |
 | **Individual bid rates** | **Encrypted. Never revealed.** |
 | **Winning bids** | **Encrypted. Only via compliance grant.** |
+| **Payout/refund amounts** | **Encrypted. ConfidentialToken transfers.** |
 | Clearing rate (K-th lowest) | Public after settlement |
 | Winner identities | Public after settlement |
+
+### Dual-token privacy architecture
+
+- **Collateral (WETH):** Standard ERC20 — amounts are public because liquidation math requires it
+- **Borrow token (cUSDC):** ConfidentialToken (FHERC20) — balances stored as `euint64`, transfers operate on ciphertext, uses operator model instead of ERC20 allowances (which would leak balance info)
 
 ## Compliance: Selective Disclosure
 

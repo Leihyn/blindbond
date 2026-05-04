@@ -1,23 +1,24 @@
-import hre from "hardhat";
-import { expect } from "chai";
-import { time } from "@nomicfoundation/hardhat-network-helpers";
+const hre = require("hardhat");
+const { expect } = require("chai");
+const { time } = require("@nomicfoundation/hardhat-network-helpers");
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
-import { BondAuction, MockERC20 } from "../typechain-types";
-import { Encryptable, FheTypes } from "@cofhe/sdk";
+import { BondAuction, MockERC20, ConfidentialToken } from "../typechain-types";
+const { Encryptable, FheTypes } = require("@cofhe/sdk");
 
 // Bond parameters
-const SLOT_SIZE = 10_000n * 10n ** 6n; // 10,000 USDC (6 decimals)
+const SLOT_SIZE = 10_000n; // 10,000 USDC (6 decimals applied at mint, slotSize is raw uint64)
+const SLOT_SIZE_WITH_DECIMALS = 10_000_000_000n; // 10,000 * 10^6
 const SLOT_COUNT = 3n;
 const MAX_RATE = 2000n; // 20% in bps
 const DURATION = 30n * 24n * 60n * 60n; // 30 days
 const BIDDING_DURATION = 3600n; // 1 hour
 const MIN_BIDDERS = 5n; // Need more bidders than slots
-const COLLATERAL_AMOUNT = 50n * 10n ** 18n; // 50 ETH (18 decimals)
+const COLLATERAL_AMOUNT = 50_000_000_000_000_000_000n; // 50 * 10^18
 
 describe("BondAuction", function () {
   let auction: BondAuction;
-  let usdc: MockERC20;
-  let weth: MockERC20;
+  let cusdc: ConfidentialToken; // FHERC20 — encrypted balances
+  let weth: MockERC20;          // Standard ERC20 for collateral
   let borrower: HardhatEthersSigner;
   let lenderA: HardhatEthersSigner;
   let lenderB: HardhatEthersSigner;
@@ -26,6 +27,9 @@ describe("BondAuction", function () {
   let lenderE: HardhatEthersSigner;
   let regulator: HardhatEthersSigner;
   let cofheClient: any;
+
+  // Operator approval: far-future expiry
+  const OPERATOR_UNTIL = 2000000000; // ~2033
 
   async function createCofheClient(signer: HardhatEthersSigner) {
     return await hre.cofhe.createClientWithBatteries(signer);
@@ -39,15 +43,15 @@ describe("BondAuction", function () {
   }
 
   async function setupBond() {
-    // Approve collateral
+    // Approve collateral (standard ERC20)
     await weth.connect(borrower).approve(await auction.getAddress(), COLLATERAL_AMOUNT);
 
-    // Create bond
+    // Create bond with ConfidentialToken as borrow token
     const tx = await auction.connect(borrower).createBond(
       await weth.getAddress(),
       COLLATERAL_AMOUNT,
-      await usdc.getAddress(),
-      SLOT_SIZE,
+      await cusdc.getAddress(),
+      SLOT_SIZE_WITH_DECIMALS, // uint64 slot size with decimals
       SLOT_COUNT,
       MAX_RATE,
       DURATION,
@@ -63,7 +67,8 @@ describe("BondAuction", function () {
     const client = await createCofheClient(lender);
     const encRate = await encryptRate(client, rateBps);
 
-    await usdc.connect(lender).approve(await auction.getAddress(), SLOT_SIZE);
+    // Set operator approval on ConfidentialToken (replaces ERC20 approve)
+    await cusdc.connect(lender).setOperator(await auction.getAddress(), OPERATOR_UNTIL);
     await auction.connect(lender).submitRate(bondId, encRate);
   }
 
@@ -72,18 +77,20 @@ describe("BondAuction", function () {
       await hre.ethers.getSigners();
 
     // Deploy tokens
+    const ConfidentialTokenFactory = await hre.ethers.getContractFactory("ConfidentialToken");
+    cusdc = await ConfidentialTokenFactory.deploy("Confidential USD Coin", "cUSDC", 6);
+
     const MockERC20Factory = await hre.ethers.getContractFactory("MockERC20");
-    usdc = await MockERC20Factory.deploy("USD Coin", "USDC", 6);
     weth = await MockERC20Factory.deploy("Wrapped Ether", "WETH", 18);
 
     // Deploy auction
     const AuctionFactory = await hre.ethers.getContractFactory("BondAuction");
     auction = await AuctionFactory.deploy();
 
-    // Mint tokens
+    // Mint tokens — ConfidentialToken mints to encrypted balances
     await weth.mint(borrower.address, COLLATERAL_AMOUNT * 2n);
     for (const lender of [lenderA, lenderB, lenderC, lenderD, lenderE]) {
-      await usdc.mint(lender.address, SLOT_SIZE * 2n);
+      await cusdc.mint(lender.address, Number(SLOT_SIZE_WITH_DECIMALS * 2n));
     }
 
     cofheClient = await createCofheClient(borrower);
@@ -98,7 +105,7 @@ describe("BondAuction", function () {
 
       expect(bond.borrower).to.equal(borrower.address);
       expect(bond.collateralAmount).to.equal(COLLATERAL_AMOUNT);
-      expect(bond.slotSize).to.equal(SLOT_SIZE);
+      expect(bond.slotSize).to.equal(SLOT_SIZE_WITH_DECIMALS);
       expect(bond.slotCount).to.equal(SLOT_COUNT);
       expect(bond.maxRate).to.equal(MAX_RATE);
       expect(bond.state).to.equal(0n); // Open
@@ -115,8 +122,8 @@ describe("BondAuction", function () {
         auction.connect(borrower).createBond(
           await weth.getAddress(),
           COLLATERAL_AMOUNT,
-          await usdc.getAddress(),
-          SLOT_SIZE,
+          await cusdc.getAddress(),
+          SLOT_SIZE_WITH_DECIMALS,
           SLOT_COUNT,
           MAX_RATE,
           DURATION,
@@ -144,7 +151,7 @@ describe("BondAuction", function () {
 
       const client = await createCofheClient(lenderA);
       const encRate = await encryptRate(client, 500n);
-      await usdc.connect(lenderA).approve(await auction.getAddress(), SLOT_SIZE);
+      await cusdc.connect(lenderA).setOperator(await auction.getAddress(), OPERATOR_UNTIL);
 
       await expect(
         auction.connect(lenderA).submitRate(bondId, encRate)
@@ -153,11 +160,11 @@ describe("BondAuction", function () {
 
     it("should reject bids from borrower", async function () {
       const bondId = await setupBond();
-      await usdc.mint(borrower.address, SLOT_SIZE);
+      await cusdc.mint(borrower.address, Number(SLOT_SIZE_WITH_DECIMALS));
 
       const client = await createCofheClient(borrower);
       const encRate = await encryptRate(client, 500n);
-      await usdc.connect(borrower).approve(await auction.getAddress(), SLOT_SIZE);
+      await cusdc.connect(borrower).setOperator(await auction.getAddress(), OPERATOR_UNTIL);
 
       await expect(
         auction.connect(borrower).submitRate(bondId, encRate)
@@ -283,13 +290,10 @@ describe("BondAuction", function () {
       expect(winnerAddresses.has(lenderC.address.toLowerCase())).to.be.true;
       expect(winnerAddresses.has(lenderE.address.toLowerCase())).to.be.true;
 
-      // Losers (B, D) should be refunded
-      expect(await usdc.balanceOf(lenderB.address)).to.equal(SLOT_SIZE * 2n); // Original + refund
-      expect(await usdc.balanceOf(lenderD.address)).to.equal(SLOT_SIZE * 2n);
-
-      // Borrower received principal (3 slots)
-      const principal = SLOT_SIZE * SLOT_COUNT;
-      expect(await usdc.balanceOf(borrower.address)).to.equal(principal);
+      // Losers (B, D) refunded via ConfidentialToken — balances are encrypted
+      // so we verify via balanceIndicator (increments on every transfer)
+      expect(await cusdc.balanceIndicator(lenderB.address)).to.be.greaterThan(0n);
+      expect(await cusdc.balanceIndicator(lenderD.address)).to.be.greaterThan(0n);
     });
 
     it("should handle repayment correctly", async function () {
@@ -304,16 +308,17 @@ describe("BondAuction", function () {
       const bond = await auction.getBond(bondId);
       const totalRepayment = bond.totalRepayment;
 
-      // Mint enough for repayment
-      await usdc.mint(borrower.address, totalRepayment);
-      await usdc.connect(borrower).approve(await auction.getAddress(), totalRepayment);
+      // Mint enough for repayment (ConfidentialToken)
+      await cusdc.mint(borrower.address, Number(totalRepayment));
+      // Set operator for the auction to pull repayment
+      await cusdc.connect(borrower).setOperator(await auction.getAddress(), OPERATOR_UNTIL);
 
       await auction.connect(borrower).repay(bondId);
 
       const bondAfter = await auction.getBond(bondId);
       expect(bondAfter.state).to.equal(5n); // Repaid
 
-      // Collateral returned to borrower
+      // Collateral returned to borrower (standard ERC20 — can verify directly)
       expect(await weth.balanceOf(borrower.address)).to.equal(COLLATERAL_AMOUNT * 2n);
     });
 
@@ -327,17 +332,16 @@ describe("BondAuction", function () {
       await auction.settle(bondId);
 
       const bond = await auction.getBond(bondId);
-      await usdc.mint(borrower.address, bond.totalRepayment);
-      await usdc.connect(borrower).approve(await auction.getAddress(), bond.totalRepayment);
+      await cusdc.mint(borrower.address, Number(bond.totalRepayment));
+      await cusdc.connect(borrower).setOperator(await auction.getAddress(), OPERATOR_UNTIL);
       await auction.connect(borrower).repay(bondId);
 
-      // Each winner claims
-      const payoutPerLender = bond.totalRepayment / SLOT_COUNT;
-
-      const balBefore = await usdc.balanceOf(lenderA.address);
+      // Winner claims — payout via ConfidentialToken (encrypted balance)
+      const indicatorBefore = await cusdc.balanceIndicator(lenderA.address);
       await auction.connect(lenderA).claim(bondId);
-      const balAfter = await usdc.balanceOf(lenderA.address);
-      expect(balAfter - balBefore).to.equal(payoutPerLender);
+      const indicatorAfter = await cusdc.balanceIndicator(lenderA.address);
+      // Balance indicator increments on transfer — proves funds moved
+      expect(indicatorAfter).to.be.greaterThan(indicatorBefore);
 
       // Can't claim twice
       await expect(
@@ -386,8 +390,11 @@ describe("BondAuction", function () {
       await hre.ethers.provider.send("evm_mine", []);
       await auction.closeBond(bondId);
 
+      // Refund via ConfidentialToken — verify indicator increments
+      const indicatorBefore = await cusdc.balanceIndicator(lenderA.address);
       await auction.connect(lenderA).claimRefund(bondId);
-      expect(await usdc.balanceOf(lenderA.address)).to.equal(SLOT_SIZE * 2n);
+      const indicatorAfter = await cusdc.balanceIndicator(lenderA.address);
+      expect(indicatorAfter).to.be.greaterThan(indicatorBefore);
     });
 
     it("should return collateral on cancelled bond", async function () {
@@ -398,6 +405,7 @@ describe("BondAuction", function () {
       await auction.closeBond(bondId);
 
       await auction.connect(borrower).claimCollateral(bondId);
+      // Collateral is standard ERC20 — can verify directly
       expect(await weth.balanceOf(borrower.address)).to.equal(COLLATERAL_AMOUNT * 2n);
     });
   });

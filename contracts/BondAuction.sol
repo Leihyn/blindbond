@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "./ConfidentialToken.sol";
 
 /// @title BondAuction — Encrypted rate discovery for on-chain credit
 ///
@@ -11,6 +12,10 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 /// interest rate bids. An iterated tournament bracket (K passes) finds the
 /// clearing rate without decrypting any individual bid. All winning lenders
 /// earn the same uniform clearing rate.
+///
+/// Lender deposits flow through ConfidentialToken (FHERC20) — balances are
+/// encrypted on-chain so individual positions stay private. Collateral
+/// remains as standard ERC20 (amounts are public for liquidation math).
 ///
 /// Built on Fhenix CoFHE.
 contract BondAuction {
@@ -33,8 +38,8 @@ contract BondAuction {
         address borrower;
         IERC20 collateralToken;
         uint256 collateralAmount;
-        IERC20 borrowToken;
-        uint256 slotSize;           // Fixed amount per slot (e.g., 10_000 USDC)
+        ConfidentialToken borrowToken; // FHERC20 — encrypted balances for lender privacy
+        uint64 slotSize;            // Fixed amount per slot (e.g., 10_000 USDC, fits uint64)
         uint256 slotCount;          // K = number of winning lenders needed
         uint64 maxRate;             // Max acceptable rate in bps (e.g., 2000 = 20.00%)
         uint256 duration;           // Bond duration in seconds
@@ -101,11 +106,13 @@ contract BondAuction {
     // =========== Bond Creation ===========
 
     /// @notice Create a bond request — borrower locks collateral and defines loan terms
+    ///         Collateral is standard ERC20 (public). Borrow token is ConfidentialToken
+    ///         (FHERC20) — lender deposits flow through encrypted balances.
     function createBond(
         IERC20 collateralToken,
         uint256 collateralAmount,
-        IERC20 borrowToken,
-        uint256 slotSize,
+        ConfidentialToken borrowToken,
+        uint64 slotSize,
         uint256 slotCount,
         uint64 maxRate,
         uint256 duration,
@@ -120,6 +127,7 @@ contract BondAuction {
         require(collateralAmount > 0, "BondAuction: zero collateral");
         require(minBidders > slotCount, "BondAuction: minBidders must exceed slotCount");
 
+        // Collateral: standard ERC20 transfer (public amount for liquidation math)
         collateralToken.safeTransferFrom(msg.sender, address(this), collateralAmount);
 
         bondId = nextBondId++;
@@ -140,7 +148,7 @@ contract BondAuction {
             bondId,
             msg.sender,
             collateralAmount,
-            slotSize * slotCount,
+            uint256(slotSize) * slotCount,
             slotCount,
             maxRate,
             duration,
@@ -150,7 +158,9 @@ contract BondAuction {
 
     // =========== Rate Bidding ===========
 
-    /// @notice Submit an encrypted rate bid — lender deposits one slot of borrowToken
+    /// @notice Submit an encrypted rate bid — lender deposits one slot via ConfidentialToken
+    ///         Lender must call borrowToken.setOperator(auction, until) before bidding.
+    ///         Deposit flows through encrypted balances — amount is private on-chain.
     function submitRate(
         uint256 bondId,
         InEuint64 calldata encRate
@@ -161,8 +171,10 @@ contract BondAuction {
         require(msg.sender != b.borrower, "BondAuction: borrower cannot bid");
         require(!hasBid[bondId][msg.sender], "BondAuction: already bid");
 
-        // Deposit = lending capital
-        b.borrowToken.safeTransferFrom(msg.sender, address(this), b.slotSize);
+        // Deposit via ConfidentialToken (FHERC20) — encrypted transfer
+        euint64 encSlotSize = FHE.asEuint64(b.slotSize);
+        FHE.allow(encSlotSize, address(b.borrowToken));
+        b.borrowToken.confidentialTransferFrom(msg.sender, address(this), encSlotSize);
 
         // Process encrypted rate
         euint64 rate = FHE.asEuint64(encRate);
@@ -363,7 +375,7 @@ contract BondAuction {
 
         // Calculate repayment: principal + interest
         // Interest = (principal * rate_bps * duration) / (365 days * 10000)
-        uint256 principal = b.slotSize * b.slotCount;
+        uint256 principal = uint256(b.slotSize) * b.slotCount;
         uint256 interest = (principal * uint256(clearingRate) * b.duration) / (365 days * 10000);
         uint256 totalRepayment = principal + interest;
 
@@ -372,15 +384,22 @@ contract BondAuction {
         b.maturity = block.timestamp + b.duration;
         b.state = BondState.Active;
 
-        // Transfer loan to borrower
-        b.borrowToken.safeTransfer(b.borrower, principal);
+        // Transfer loan to borrower via ConfidentialToken (encrypted)
+        euint64 encPrincipal = FHE.asEuint64(uint64(principal));
+        FHE.allow(encPrincipal, address(b.borrowToken));
+        b.borrowToken.confidentialTransfer(b.borrower, encPrincipal);
 
-        // Refund losing lenders
+        // Refund losing lenders via ConfidentialToken (encrypted)
+        euint64 encSlotRefund = FHE.asEuint64(b.slotSize);
+        FHE.allow(encSlotRefund, address(b.borrowToken));
         for (uint256 i = 0; i < n; i++) {
             if (!isWinner[bondId][rateBids[i].lender] && !rateBids[i].refunded) {
                 rateBids[i].refunded = true;
-                b.borrowToken.safeTransfer(rateBids[i].lender, b.slotSize);
-                emit RefundClaimed(bondId, rateBids[i].lender, b.slotSize);
+                // Each refund needs its own encrypted amount for ACL
+                euint64 refundAmt = FHE.asEuint64(b.slotSize);
+                FHE.allow(refundAmt, address(b.borrowToken));
+                b.borrowToken.confidentialTransfer(rateBids[i].lender, refundAmt);
+                emit RefundClaimed(bondId, rateBids[i].lender, uint256(b.slotSize));
             }
         }
 
@@ -390,12 +409,18 @@ contract BondAuction {
     // =========== Repayment ===========
 
     /// @notice Borrower repays the bond (principal + interest at clearing rate)
+    ///         Repayment flows through ConfidentialToken. Borrower must setOperator first.
     function repay(uint256 bondId) external {
         Bond storage b = bonds[bondId];
         require(b.state == BondState.Active, "BondAuction: not active");
         require(msg.sender == b.borrower, "BondAuction: not borrower");
 
-        b.borrowToken.safeTransferFrom(msg.sender, address(this), b.totalRepayment);
+        // Repayment via ConfidentialToken (encrypted transfer)
+        euint64 encRepayment = FHE.asEuint64(uint64(b.totalRepayment));
+        FHE.allow(encRepayment, address(b.borrowToken));
+        b.borrowToken.confidentialTransferFrom(msg.sender, address(this), encRepayment);
+
+        // Collateral return stays as standard ERC20 (public)
         b.collateralToken.safeTransfer(b.borrower, b.collateralAmount);
 
         b.state = BondState.Repaid;
@@ -403,6 +428,7 @@ contract BondAuction {
     }
 
     /// @notice Winning lender claims principal + proportional interest after repayment
+    ///         Payout flows through ConfidentialToken — claim amount is private on-chain.
     function claim(uint256 bondId) external {
         Bond storage b = bonds[bondId];
         require(b.state == BondState.Repaid, "BondAuction: not repaid");
@@ -411,7 +437,10 @@ contract BondAuction {
         uint256 payout = b.totalRepayment / b.slotCount;
         isWinner[bondId][msg.sender] = false;
 
-        b.borrowToken.safeTransfer(msg.sender, payout);
+        // Payout via ConfidentialToken (encrypted)
+        euint64 encPayout = FHE.asEuint64(uint64(payout));
+        FHE.allow(encPayout, address(b.borrowToken));
+        b.borrowToken.confidentialTransfer(msg.sender, encPayout);
         emit LenderClaimed(bondId, msg.sender, payout);
     }
 
@@ -445,7 +474,7 @@ contract BondAuction {
 
     // =========== Refunds ===========
 
-    /// @notice Claim deposit refund from a cancelled bond
+    /// @notice Claim deposit refund from a cancelled bond (via ConfidentialToken)
     function claimRefund(uint256 bondId) external {
         Bond storage b = bonds[bondId];
         require(b.state == BondState.Cancelled, "BondAuction: not cancelled");
@@ -455,8 +484,10 @@ contract BondAuction {
         for (uint256 i = 0; i < rateBids.length; i++) {
             if (rateBids[i].lender == msg.sender && !rateBids[i].refunded) {
                 rateBids[i].refunded = true;
-                b.borrowToken.safeTransfer(msg.sender, b.slotSize);
-                emit RefundClaimed(bondId, msg.sender, b.slotSize);
+                euint64 encRefund = FHE.asEuint64(b.slotSize);
+                FHE.allow(encRefund, address(b.borrowToken));
+                b.borrowToken.confidentialTransfer(msg.sender, encRefund);
+                emit RefundClaimed(bondId, msg.sender, uint256(b.slotSize));
                 return;
             }
         }
@@ -509,7 +540,7 @@ contract BondAuction {
         address collateralToken,
         uint256 collateralAmount,
         address borrowToken,
-        uint256 slotSize,
+        uint64 slotSize,
         uint256 slotCount,
         uint64 maxRate,
         uint256 duration,
@@ -539,6 +570,22 @@ contract BondAuction {
             b.settledRate,
             b.totalRepayment
         );
+    }
+
+    /// @notice Returns raw FHE handles needed for off-chain decrypt + publishResults
+    ///         Only useful after bond is Resolved (state=3)
+    function getDecryptHandles(uint256 bondId) external view returns (
+        bytes32 clearingRateHandle,
+        bytes32[] memory excludedHandles
+    ) {
+        Bond storage b = bonds[bondId];
+        clearingRateHandle = euint64.unwrap(b.clearingRate);
+
+        uint256 n = bids[bondId].length;
+        excludedHandles = new bytes32[](n);
+        for (uint256 i = 0; i < n; i++) {
+            excludedHandles[i] = ebool.unwrap(excluded[bondId][i]);
+        }
     }
 
     function getBidCount(uint256 bondId) external view returns (uint256) {

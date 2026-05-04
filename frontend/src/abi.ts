@@ -5,7 +5,7 @@ export const BOND_AUCTION_ABI = [
       { name: "collateralToken", type: "address" },
       { name: "collateralAmount", type: "uint256" },
       { name: "borrowToken", type: "address" },
-      { name: "slotSize", type: "uint256" },
+      { name: "slotSize", type: "uint64" },
       { name: "slotCount", type: "uint256" },
       { name: "maxRate", type: "uint64" },
       { name: "duration", type: "uint256" },
@@ -94,7 +94,7 @@ export const BOND_AUCTION_ABI = [
       { name: "collateralToken", type: "address" },
       { name: "collateralAmount", type: "uint256" },
       { name: "borrowToken", type: "address" },
-      { name: "slotSize", type: "uint256" },
+      { name: "slotSize", type: "uint64" },
       { name: "slotCount", type: "uint256" },
       { name: "maxRate", type: "uint64" },
       { name: "duration", type: "uint256" },
@@ -155,6 +155,66 @@ export const BOND_AUCTION_ABI = [
     stateMutability: "view",
     type: "function",
   },
+  // getDecryptHandles
+  {
+    inputs: [{ name: "bondId", type: "uint256" }],
+    name: "getDecryptHandles",
+    outputs: [
+      { name: "clearingRateHandle", type: "bytes32" },
+      { name: "excludedHandles", type: "bytes32[]" },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+  // publishResults
+  {
+    inputs: [
+      { name: "bondId", type: "uint256" },
+      { name: "clearingRate", type: "uint64" },
+      { name: "rateSignature", type: "bytes" },
+      { name: "winnerFlags", type: "bool[]" },
+      { name: "flagSignatures", type: "bytes[]" },
+    ],
+    name: "publishResults",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  // getBidder
+  {
+    inputs: [
+      { name: "bondId", type: "uint256" },
+      { name: "bidIndex", type: "uint256" },
+    ],
+    name: "getBidder",
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  // claimRefund
+  {
+    inputs: [{ name: "bondId", type: "uint256" }],
+    name: "claimRefund",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  // claimCollateral
+  {
+    inputs: [{ name: "bondId", type: "uint256" }],
+    name: "claimCollateral",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  // cancelBond
+  {
+    inputs: [{ name: "bondId", type: "uint256" }],
+    name: "cancelBond",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
   // events
   {
     anonymous: false,
@@ -180,6 +240,75 @@ export const BOND_AUCTION_ABI = [
     ],
     name: "BondSettled",
     type: "event",
+  },
+] as const;
+
+// ConfidentialToken (FHERC20) — encrypted balances, operator model
+export const CONFIDENTIAL_TOKEN_ABI = [
+  {
+    inputs: [
+      { name: "operator", type: "address" },
+      { name: "until", type: "uint48" },
+    ],
+    name: "setOperator",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "holder", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    name: "isOperator",
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint64" },
+    ],
+    name: "mint",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [{ name: "account", type: "address" }],
+    name: "balanceIndicator",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "totalMinted",
+    outputs: [{ name: "", type: "uint64" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "name",
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "symbol",
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "decimals",
+    outputs: [{ name: "", type: "uint8" }],
+    stateMutability: "view",
+    type: "function",
   },
 ] as const;
 

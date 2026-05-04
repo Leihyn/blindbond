@@ -7,22 +7,25 @@ import { arbitrumSepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 
 const ADDRESSES = {
-  BondAuction: "0xD916970FE36541A0a71Db13415CfFBFF005e761e",
-  USDC: "0xcC86944f5E7385cA6Df8EEC5d40957840cfdfbb2",
-  WETH: "0x55Bd48C34441FEdA5c0D45a2400976fB933Abb7e",
+  BondAuction: "0x2f62CcF1C2589c9f785Ea861CF7E16FF1f61F90E",
+  cUSDC: "0x443Cf954feFd48ac73f1bC79C71978D427e93389",
+  WETH: "0x39D746e76631E81F50E8a013b509eB716981f9C0",
 };
 
 const RPC_URL = process.env.ARBITRUM_SEPOLIA_RPC_URL || "https://sepolia-rollup.arbitrum.io/rpc";
 const DEPLOYER_PK = process.env.PRIVATE_KEY as `0x${string}`;
 
 // Bond params — small for demo
-const SLOT_SIZE = hre.ethers.parseUnits("100", 6); // 100 USDC per slot
+const SLOT_SIZE = 100n * 10n ** 6n; // 100 cUSDC per slot (uint64 with 6 decimals)
 const SLOT_COUNT = 2n;
 const MAX_RATE = 2000n; // 20%
 const DURATION = 300n; // 5 min (short for demo)
 const BIDDING_DURATION = 360n; // 6 minutes (FHE encryption takes time)
 const MIN_BIDDERS = 3n;
 const COLLATERAL = hre.ethers.parseUnits("0.1", 18); // 0.1 WETH
+
+// Operator expiry: far future (~2033)
+const OPERATOR_UNTIL = 2000000000;
 
 // Lender rates in bps
 const LENDER_RATES = [300n, 450n, 380n]; // 3%, 4.5%, 3.8%
@@ -35,7 +38,7 @@ function sleep(ms: number) {
 async function main() {
   const deployer = (await hre.ethers.getSigners())[0];
   const auction = await hre.ethers.getContractAt("BondAuction", ADDRESSES.BondAuction);
-  const usdc = await hre.ethers.getContractAt("MockERC20", ADDRESSES.USDC);
+  const cusdc = await hre.ethers.getContractAt("ConfidentialToken", ADDRESSES.cUSDC);
   const weth = await hre.ethers.getContractAt("MockERC20", ADDRESSES.WETH);
 
   const publicClient = createPublicClient({
@@ -52,9 +55,10 @@ async function main() {
   console.log("=== STEP 1: Mint tokens ===");
   let tx = await weth.mint(deployer.address, COLLATERAL);
   await tx.wait();
-  tx = await usdc.mint(deployer.address, SLOT_SIZE * 10n); // extra for repayment later
+  // Mint cUSDC (ConfidentialToken) — balance stored encrypted
+  tx = await cusdc.mint(deployer.address, Number(SLOT_SIZE) * 10); // extra for repayment later
   await tx.wait();
-  console.log("Minted 0.1 WETH + 1000 USDC to deployer\n");
+  console.log("Minted 0.1 WETH + 1000 cUSDC (encrypted balance) to deployer\n");
 
   // ============================================================
   // STEP 2: Create bond (deployer = borrower)
@@ -65,7 +69,7 @@ async function main() {
 
   tx = await auction.createBond(
     ADDRESSES.WETH, COLLATERAL,
-    ADDRESSES.USDC, SLOT_SIZE, SLOT_COUNT,
+    ADDRESSES.cUSDC, SLOT_SIZE, SLOT_COUNT,
     MAX_RATE, DURATION, BIDDING_DURATION, MIN_BIDDERS
   );
   const createReceipt = await tx.wait();
@@ -76,8 +80,9 @@ async function main() {
   const bondData = await auction.getBond(bondId);
   const deadline = Number(bondData[8]);
   console.log("Bidding deadline:", new Date(deadline * 1000).toLocaleTimeString());
-  console.log("Slots:", SLOT_COUNT.toString(), "x", hre.ethers.formatUnits(SLOT_SIZE, 6), "USDC");
+  console.log("Slots:", SLOT_COUNT.toString(), "x", hre.ethers.formatUnits(SLOT_SIZE, 6), "cUSDC");
   console.log("Max rate:", (Number(MAX_RATE) / 100).toFixed(2) + "%");
+  console.log("Borrow token: ConfidentialToken (FHERC20) — encrypted balances");
   console.log("");
 
   // ============================================================
@@ -93,14 +98,14 @@ async function main() {
     console.log(`  Rate: ${(Number(rate) / 100).toFixed(2)}% (${rate} bps) — ENCRYPTED, nobody can see this`);
 
     // Fund with ETH for gas
-    tx = await deployer.sendTransaction({ to: wallet.address, value: hre.ethers.parseEther("0.003") });
+    tx = await deployer.sendTransaction({ to: wallet.address, value: hre.ethers.parseEther("0.0005") });
     await tx.wait();
     console.log("  Funded with 0.003 ETH");
 
-    // Mint USDC
-    tx = await usdc.mint(wallet.address, SLOT_SIZE);
+    // Mint cUSDC (encrypted balance)
+    tx = await cusdc.mint(wallet.address, Number(SLOT_SIZE));
     await tx.wait();
-    console.log("  Minted", hre.ethers.formatUnits(SLOT_SIZE, 6), "USDC");
+    console.log("  Minted", hre.ethers.formatUnits(SLOT_SIZE, 6), "cUSDC (encrypted balance)");
 
     // Create CoFHE client for this lender
     const lenderViemWallet = createWalletClient({
@@ -117,15 +122,17 @@ async function main() {
     const [encryptedRate] = await cofhe.encryptInputs([Encryptable.uint64(rate)]).execute();
     console.log("  Encrypted! ctHash:", encryptedRate.ctHash?.toString()?.slice(0, 16) + "...");
 
-    // Approve + submit
-    const lenderUsdc = usdc.connect(wallet) as typeof usdc;
-    tx = await lenderUsdc.approve(ADDRESSES.BondAuction, SLOT_SIZE);
+    // Set operator on ConfidentialToken (replaces ERC20 approve)
+    const lenderCusdc = cusdc.connect(wallet) as typeof cusdc;
+    tx = await lenderCusdc.setOperator(ADDRESSES.BondAuction, OPERATOR_UNTIL);
     await tx.wait();
+    console.log("  Operator set on cUSDC (ConfidentialToken)");
 
     const lenderAuction = auction.connect(wallet) as typeof auction;
     tx = await lenderAuction.submitRate(bondId, encryptedRate);
     const bidReceipt = await tx.wait();
     console.log("  Bid submitted! Gas:", bidReceipt?.gasUsed?.toString());
+    console.log("  Deposit transferred via encrypted balance — amount private on-chain");
 
     lenders.push({ wallet, rate });
   }
@@ -168,10 +175,58 @@ async function main() {
   // ============================================================
   console.log("\n=== STEP 6: Settle bond ===");
 
-  // Wait a moment for decrypt results (CoFHE threshold network)
-  console.log("Waiting 15 seconds for CoFHE decryption...");
-  await sleep(15000);
+  // Publish decryption results via CoFHE SDK
+  console.log("Fetching decryption results from CoFHE threshold network...");
+  await sleep(5000);
 
+  // Get clearing rate handle from raw bond storage
+  const rawBond = await auction.bonds(bondId);
+  const clearingRateHandle = rawBond[14]; // euint64 clearingRate
+
+  // Decrypt clearing rate
+  const cofheDeployer = createCofheClient(createCofheConfig({ supportedChains: [arbSepolia] }));
+  const deployerViemWallet = createWalletClient({
+    account: privateKeyToAccount(DEPLOYER_PK),
+    chain: arbitrumSepolia,
+    transport: http(RPC_URL),
+  });
+  await cofheDeployer.connect(publicClient, deployerViemWallet);
+
+  console.log("Decrypting clearing rate...");
+  const rateResult = await cofheDeployer.decryptForTx(BigInt(clearingRateHandle)).withoutPermit().execute();
+  console.log("Clearing rate:", (Number(rateResult.decryptedValue) / 100).toFixed(2) + "%");
+
+  // Decrypt winner flags from storage
+  console.log("Decrypting winner flags...");
+  const winnerFlags: boolean[] = [];
+  const flagSignatures: string[] = [];
+  const n = Number(await auction.getBidCount(bondId));
+
+  for (let i = 0; i < n; i++) {
+    const bondSlot = hre.ethers.keccak256(
+      hre.ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [bondId, 4])
+    );
+    const arrayStart = hre.ethers.keccak256(bondSlot);
+    const elementSlot = BigInt(arrayStart) + BigInt(i);
+    const flagHandle = await deployer.provider.getStorage(
+      ADDRESSES.BondAuction,
+      "0x" + elementSlot.toString(16).padStart(64, "0")
+    );
+    const flagResult = await cofheDeployer.decryptForTx(BigInt(flagHandle)).withoutPermit().execute();
+    winnerFlags.push(flagResult.decryptedValue > 0n);
+    flagSignatures.push(flagResult.signature);
+    console.log(`  Bid ${i}: ${flagResult.decryptedValue > 0n ? "WINNER" : "loser"}`);
+  }
+
+  // Publish on-chain
+  console.log("Publishing decryption results on-chain...");
+  tx = await auction.publishResults(
+    bondId, rateResult.decryptedValue, rateResult.signature, winnerFlags, flagSignatures
+  );
+  await tx.wait();
+  console.log("Results published!");
+
+  // Settle
   tx = await auction.settle(bondId);
   const settleReceipt = await tx.wait();
   console.log("Bond settled! Gas:", settleReceipt?.gasUsed?.toString());
@@ -180,9 +235,9 @@ async function main() {
   const clearingRate = Number(settledBond[13]);
   const totalRepayment = settledBond[14];
   console.log(`\n  CLEARING RATE: ${(clearingRate / 100).toFixed(2)}%`);
-  console.log(`  Total repayment: ${hre.ethers.formatUnits(totalRepayment, 6)} USDC`);
-  console.log(`  Principal: ${hre.ethers.formatUnits(SLOT_SIZE * SLOT_COUNT, 6)} USDC`);
-  console.log(`  Interest: ${hre.ethers.formatUnits(totalRepayment - SLOT_SIZE * SLOT_COUNT, 6)} USDC`);
+  console.log(`  Total repayment: ${hre.ethers.formatUnits(totalRepayment, 6)} cUSDC`);
+  console.log(`  Principal: ${hre.ethers.formatUnits(SLOT_SIZE * SLOT_COUNT, 6)} cUSDC`);
+  console.log(`  Interest: ${hre.ethers.formatUnits(totalRepayment - SLOT_SIZE * SLOT_COUNT, 6)} cUSDC`);
 
   const winners = await auction.getWinners(bondId);
   console.log(`  Winners (${winners.length}):`);
@@ -191,25 +246,20 @@ async function main() {
     console.log(`    ${w.slice(0, 10)}... — bid ${lender ? (Number(lender.rate) / 100).toFixed(2) + "%" : "unknown"} (earns ${(clearingRate / 100).toFixed(2)}%)`);
   }
 
-  // Check losers got refunded
-  console.log("  Losers refunded:");
-  for (const l of lenders) {
-    if (!winners.map((w: string) => w.toLowerCase()).includes(l.wallet.address.toLowerCase())) {
-      const bal = await usdc.balanceOf(l.wallet.address);
-      console.log(`    ${l.wallet.address.slice(0, 10)}... — bid ${(Number(l.rate) / 100).toFixed(2)}% — refunded ${hre.ethers.formatUnits(bal, 6)} USDC`);
-    }
-  }
+  // Losers refunded via ConfidentialToken (encrypted)
+  console.log("  Losers refunded via encrypted transfer (balance private on-chain)");
 
   // ============================================================
   // STEP 7: Borrower repays
   // ============================================================
   console.log("\n=== STEP 7: Borrower repays ===");
-  tx = await usdc.approve(ADDRESSES.BondAuction, totalRepayment);
+  // Set operator for repayment
+  tx = await cusdc.setOperator(ADDRESSES.BondAuction, OPERATOR_UNTIL);
   await tx.wait();
   tx = await auction.repay(bondId);
   const repayReceipt = await tx.wait();
-  console.log("Repaid!", hre.ethers.formatUnits(totalRepayment, 6), "USDC");
-  console.log("Collateral returned to borrower");
+  console.log("Repaid!", hre.ethers.formatUnits(totalRepayment, 6), "cUSDC (encrypted transfer)");
+  console.log("Collateral returned to borrower (standard ERC20)");
 
   // ============================================================
   // STEP 8: Lenders claim
@@ -221,8 +271,7 @@ async function main() {
       const lenderAuction = auction.connect(lender.wallet) as typeof auction;
       tx = await lenderAuction.claim(bondId);
       await tx.wait();
-      const bal = await usdc.balanceOf(lender.wallet.address);
-      console.log(`  ${w.slice(0, 10)}... claimed ${hre.ethers.formatUnits(bal, 6)} USDC (principal + interest)`);
+      console.log(`  ${w.slice(0, 10)}... claimed payout (encrypted balance — amount private on-chain)`);
     }
   }
 
@@ -233,11 +282,14 @@ async function main() {
   console.log("FULL LIFECYCLE COMPLETE ON ARBITRUM SEPOLIA");
   console.log("========================================");
   console.log(`Bond ID: ${bondId}`);
+  console.log(`Borrow token: ConfidentialToken (FHERC20) — all deposits, payouts, refunds use encrypted balances`);
   console.log(`Lender rates: ${LENDER_RATES.map((r) => (Number(r) / 100).toFixed(2) + "%").join(", ")} (all encrypted, never revealed)`);
   console.log(`Clearing rate: ${(clearingRate / 100).toFixed(2)}% (marginal winner's rate)`);
   console.log(`Winners earned: ${(clearingRate / 100).toFixed(2)}% (uniform price — not their own bid)`);
-  console.log(`Losers: fully refunded`);
+  console.log(`Losers: fully refunded (encrypted transfer)`);
   console.log(`Borrower: repaid principal + interest, got collateral back`);
+  console.log(`\nPrivacy: Rate bids AND token balances are encrypted on-chain.`);
+  console.log(`An observer sees encrypted ciphertext for both rates and amounts.`);
 }
 
 main().catch((error) => {

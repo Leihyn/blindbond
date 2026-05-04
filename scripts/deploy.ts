@@ -5,13 +5,14 @@ async function main() {
   console.log("Deploying with:", deployer.address);
   console.log("Network:", hre.network.name);
 
-  // Deploy MockERC20s (for testnet demo)
+  // Deploy ConfidentialToken (FHERC20) for borrow token — encrypted balances
+  const ConfidentialToken = await hre.ethers.getContractFactory("ConfidentialToken");
+  const cusdc = await ConfidentialToken.deploy("Confidential USD Coin", "cUSDC", 6);
+  await cusdc.waitForDeployment();
+  console.log("cUSDC (ConfidentialToken) deployed:", await cusdc.getAddress());
+
+  // Deploy standard ERC20 for collateral (public amounts for liquidation math)
   const MockERC20 = await hre.ethers.getContractFactory("MockERC20");
-
-  const usdc = await MockERC20.deploy("USD Coin", "USDC", 6);
-  await usdc.waitForDeployment();
-  console.log("USDC deployed:", await usdc.getAddress());
-
   const weth = await MockERC20.deploy("Wrapped Ether", "WETH", 18);
   await weth.waitForDeployment();
   console.log("WETH deployed:", await weth.getAddress());
@@ -28,7 +29,7 @@ async function main() {
     chainId: hre.network.config.chainId,
     deployer: deployer.address,
     BondAuction: await auction.getAddress(),
-    USDC: await usdc.getAddress(),
+    cUSDC: await cusdc.getAddress(),
     WETH: await weth.getAddress(),
   };
 
